@@ -269,7 +269,7 @@ class WeightDependentPostPre(LearningRule):
         
         self.fl = open("C:/Users/Всеволод/Desktop/STDP.txt",'r')
         
-        self.STDP_base =  torch.ones([101, 120])
+        self.STDP_base =  torch.zeros([101, 120])
         
         i = 0
         k = 0
@@ -398,7 +398,7 @@ class WeightDependentPostPre(LearningRule):
         
         outer_product = self.reduction(torch.bmm(source_s, target_x), dim=0)
         update += self.nu[0] * self.delta_w_custom(self.tc_trace_neg*np.log(outer_product)) # + c_neg)
-       # print(-self.tc_trace_neg*np.log(outer_product))
+        #print(-self.tc_trace_neg*np.log(outer_product))
         
         # Post-synaptic update.
         

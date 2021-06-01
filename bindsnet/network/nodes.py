@@ -575,7 +575,7 @@ class LIFNodes(Nodes):
         rest: Union[float, torch.Tensor] = -65.0,
         reset: Union[float, torch.Tensor] = -65.0,
         refrac: Union[int, torch.Tensor] = 5,
-        tc_decay: Union[float, torch.Tensor] = 100.0,
+        tc_decay: Union[float, torch.Tensor] = 150.0,
         lbound: float = None,
         **kwargs,
     ) -> None:
