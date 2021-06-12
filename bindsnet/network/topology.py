@@ -20,6 +20,9 @@ class AbstractConnection(ABC, Module):
         self,
         source: Nodes,
         target: Nodes,
+        impulse_amplitude: float,
+        impulse_length: float,
+        impulse_shape_factor: float = 0.9,
         nu: Optional[Union[float, Sequence[float]]] = None,
         reduction: Optional[callable] = None,
         weight_decay: float = 0.0,
@@ -69,8 +72,9 @@ class AbstractConnection(ABC, Module):
             "norm_by_max_from_shadow_weights", False
         )
         self.impulse_state = torch.zeros(source.n)
-        self.impulse_amplitude = 3
-        self.impulse_length = 60.0
+        self.impulse_amplitude = impulse_amplitude
+        self.impulse_length = impulse_length
+        self.impulse_shape_factor = impulse_shape_factor
         self.a_pre = 0
 
         if self.update_rule is None:
@@ -133,6 +137,9 @@ class Connection(AbstractConnection):
         self,
         source: Nodes,
         target: Nodes,
+        impulse_amplitude: float,
+        impulse_length: float,
+        impulse_shape_factor: float = 0.9,
         nu: Optional[Union[float, Sequence[float]]] = None,
         reduction: Optional[callable] = None,
         weight_decay: float = 0.0,
@@ -160,7 +167,7 @@ class Connection(AbstractConnection):
         :param ByteTensor norm_by_max_with_shadow_weights: Normalize the weight of a neuron by its max weight by
                                                            original weights.
         """
-        super().__init__(source, target, nu, reduction, weight_decay, **kwargs)
+        super().__init__(source, target, impulse_amplitude, impulse_length, impulse_shape_factor, nu, reduction, weight_decay, **kwargs)
 
         w = kwargs.get("w", None)
         if w is None:
@@ -200,7 +207,7 @@ class Connection(AbstractConnection):
         #impulse = 0.1 * (self.impulse_state > 0).float().view(-1) - impulse_bias 
         
         
-        k = 0.9
+        k = self.impulse_shape_factor
         impulse_value = self.impulse_amplitude/(self.impulse_length - 2 )/k #производная в точках, не находящихся в середине импульса
     
         impulse_bias =  (2*self.impulse_amplitude *(abs(self.impulse_state - (self.impulse_length * k)) < 0.5).float().view(-1) + 2*self.impulse_amplitude*(abs(self.impulse_state - (self.impulse_length * k)) == 0.5).float().view(-1)*(self.impulse_state < self.impulse_length * k).float().view(-1))
