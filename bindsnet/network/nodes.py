@@ -57,7 +57,7 @@ class Nodes(torch.nn.Module):
         assert self.n == reduce(
             mul, self.shape
         ), "No. of neurons and shape do not match"
-
+        
         self.traces = traces  # Whether to record synaptic traces.
         self.traces_additive = (
             traces_additive
@@ -182,7 +182,7 @@ class AbstractInput(ABC):
     """
     Abstract base class for groups of input neurons.
     """
-
+    
 
 class Input(Nodes, AbstractInput):
     # language=rst
@@ -576,7 +576,13 @@ class LIFNodes(Nodes):
         reset: Union[float, torch.Tensor] = -65.0,
         refrac: Union[int, torch.Tensor] = 5,
         tc_decay: Union[float, torch.Tensor] = 150.0,
+        dt: float  = 1.0,
         lbound: float = None,
+        astrocyte_receptive_field: int = None,
+        gamma: float = None,
+        alpha: float = None,
+        theta_k: float = None,
+        k: float = None,
         **kwargs,
     ) -> None:
         # language=rst
@@ -607,13 +613,17 @@ class LIFNodes(Nodes):
             trace_scale=trace_scale,
             sum_input=sum_input,
         )
-
+        
+        self.dt = dt
+        
+        self.astrocyte_receptive_field = astrocyte_receptive_field
+        
         self.register_buffer(
             "rest", torch.tensor(rest, dtype=torch.float)
         )  # Rest voltage.
         self.register_buffer(
             "reset", torch.tensor(reset, dtype=torch.float)
-        )  # Post-spike reset voltage.
+        )  # Post-spike reset voltage.       
         self.register_buffer(
             "thresh", torch.tensor(thresh, dtype=torch.float)
         )  # Spike threshold voltage.
@@ -633,6 +643,26 @@ class LIFNodes(Nodes):
 
         self.lbound = lbound  # Lower bound of voltage.
 
+        if self.astrocyte_receptive_field is not None:
+            self.Y = torch.zeros(1, 1+len(self.thresh)-self.astrocyte_receptive_field)
+        self.gamma = gamma
+        self.theta_k = theta_k
+        self.k = k
+        self.alpha = alpha
+        
+    def H(self, X):
+        return 1/(1 + torch.exp(-(X-self.theta_k)/self.k))
+    
+    def astrocyte_input(self):
+        
+        response = torch.ones_like(self.thresh)
+
+        for i in range(0,1+len(self.thresh)-self.astrocyte_receptive_field):
+            self.Y[0][i] -= self.dt*self.alpha*(self.Y[0][i] - self.H(sum(self.v[0][i:i+self.astrocyte_receptive_field])))
+            response[i:i+self.astrocyte_receptive_field] += self.gamma*self.Y[0][i]
+        
+        return response
+    
     def forward(self, x: torch.Tensor) -> None:
         # language=rst
         """
@@ -653,6 +683,9 @@ class LIFNodes(Nodes):
 
         # Check for spiking neurons.
         self.s = self.v >= self.thresh
+        
+        if self.astrocyte_receptive_field is not None:    
+            self.thresh *= self.astrocyte_input() 
 
         # Refractoriness and voltage reset.
         self.refrac_count.masked_fill_(self.s, self.refrac)
@@ -661,7 +694,7 @@ class LIFNodes(Nodes):
         # Voltage clipping to lower bound.
         if self.lbound is not None:
             self.v.masked_fill_(self.v < self.lbound, self.lbound)
-
+         
         super().forward(x)
 
     def reset_(self) -> None:

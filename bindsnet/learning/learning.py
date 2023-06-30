@@ -26,6 +26,7 @@ class LearningRule(ABC):
         nu: Optional[Union[float, Sequence[float]]] = None,
         reduction: Optional[callable] = None,
         weight_decay: float = 0.0,
+        post_spike_weight_decay: float = 0.0,
         **kwargs
     ) -> None:
         # language=rst
@@ -61,6 +62,7 @@ class LearningRule(ABC):
 
         # Weight decay.
         self.weight_decay = weight_decay
+        self.post_spike_weight_decay = post_spike_weight_decay
 
     def update(self) -> None:
         # language=rst
@@ -240,6 +242,7 @@ class WeightDependentPostPre(LearningRule):
         nu: Optional[Union[float, Sequence[float]]] = None,
         reduction: Optional[callable] = None,
         weight_decay: float = 0.0,
+        post_spike_weight_decay: float = 0.0,
         tc_trace: float = 20,
         tc_trace_neg: float = 20,
         **kwargs
@@ -259,6 +262,7 @@ class WeightDependentPostPre(LearningRule):
             nu=nu,
             reduction=reduction,
             weight_decay=weight_decay,
+            post_spike_weight_decay = post_spike_weight_decay,
             **kwargs
         )
         
@@ -267,7 +271,7 @@ class WeightDependentPostPre(LearningRule):
         
         self.interval = 100
         
-        self.fl = open("C:/Users/Всеволод/Desktop/STDP.txt",'r')
+        self.fl = open("STDP.txt",'r')
         
         self.STDP_base =  torch.zeros([101, 120])
         
@@ -326,6 +330,7 @@ class WeightDependentPostPre(LearningRule):
     
     def round_to_percent(self, tensor):
         
+        tensor = tensor/self.nu[0] #here we assume that nu[0] == nu[1]. It is just a scale factor.
         tensor = tensor *100
         
         #print(float(tensor[1,1]))
@@ -335,7 +340,10 @@ class WeightDependentPostPre(LearningRule):
             for k in range (tensor.size(1)):
             
                 tensor[i][k] = int(round(float(tensor[i][k])))
-        
+                
+                if tensor[i][k]<0:
+                    tensor[i][k] = -tensor[i][k]
+                
         return tensor
         
     
@@ -359,10 +367,9 @@ class WeightDependentPostPre(LearningRule):
                # if  delta[i][k]<0:
                     
                     #print(self.source.s.view(self.source.batch_size, -1).unsqueeze(2).float(),'\n')
-                    
-               
+                           
+        #return torch.normal(mean = delta,std = 0.614699*delta)
         return delta
-    
     
     def _connection_update(self, **kwargs) -> None:
         # language=rst
@@ -377,13 +384,13 @@ class WeightDependentPostPre(LearningRule):
         target_x = self.target.x_neg.view(batch_size, -1).unsqueeze(1)
 
         update = 0
-        Ohm_max = 10000
-        Ohm_min = 1000
+        #Ohm_max = 10000
+        #Ohm_min = 1000
 
-        G_neg = self.G_neg(self.weight_to_Ohm(self.connection.w, Ohm_min, Ohm_max))
-        G_pos = self.G_pos(self.weight_to_Ohm(self.connection.w, Ohm_min, Ohm_max))
-        c_neg = self.c_neg(self.weight_to_Ohm(self.connection.w, Ohm_min, Ohm_max))
-        c_pos = self.c_pos(self.weight_to_Ohm(self.connection.w, Ohm_min, Ohm_max))
+        #G_neg = self.G_neg(self.weight_to_Ohm(self.connection.w, Ohm_min, Ohm_max))
+        #G_pos = self.G_pos(self.weight_to_Ohm(self.connection.w, Ohm_min, Ohm_max))
+        #c_neg = self.c_neg(self.weight_to_Ohm(self.connection.w, Ohm_min, Ohm_max))
+        #c_pos = self.c_pos(self.weight_to_Ohm(self.connection.w, Ohm_min, Ohm_max))
         
         #print(G_neg.size(), G_pos.size(), c_neg.size(),c_pos.size())
         #for i in range (source_s.size(1)):
@@ -404,7 +411,8 @@ class WeightDependentPostPre(LearningRule):
         
         outer_product = self.reduction(torch.bmm(source_x, target_s), dim=0)
         update += self.nu[1] * self.delta_w_custom(-self.tc_trace*np.log(outer_product)) # + c_pos)
-       # update += update_temp
+        
+        update += (-self.post_spike_weight_decay)*self.connection.w*self.reduction(torch.bmm(torch.ones(source_x.shape), target_s), dim=0)
         
         self.connection.w += update
 

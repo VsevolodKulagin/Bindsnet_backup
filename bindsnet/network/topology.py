@@ -21,11 +21,14 @@ class AbstractConnection(ABC, Module):
         source: Nodes,
         target: Nodes,
         impulse_amplitude: float,
+        impulse_amplitude_2: float,
         impulse_length: float,
         impulse_shape_factor: float = 0.9,
+        invert: bool = False,
         nu: Optional[Union[float, Sequence[float]]] = None,
         reduction: Optional[callable] = None,
         weight_decay: float = 0.0,
+        post_spike_weight_decay: float = 0.0,
         **kwargs
     ) -> None:
         # language=rst
@@ -55,9 +58,10 @@ class AbstractConnection(ABC, Module):
 
         self.source = source
         self.target = target
-
+    
         self.nu = nu
         self.weight_decay = weight_decay
+        self.post_spike_weight_decay = post_spike_weight_decay
         self.reduction = reduction
 
         from ..learning import NoOp
@@ -73,8 +77,10 @@ class AbstractConnection(ABC, Module):
         )
         self.impulse_state = torch.zeros(source.n)
         self.impulse_amplitude = impulse_amplitude
+        self.impulse_amplitude_2 = impulse_amplitude_2
         self.impulse_length = impulse_length
         self.impulse_shape_factor = impulse_shape_factor
+        self.invert = invert
         self.a_pre = 0
 
         if self.update_rule is None:
@@ -85,6 +91,7 @@ class AbstractConnection(ABC, Module):
             nu=nu,
             reduction=reduction,
             weight_decay=weight_decay,
+            post_spike_weight_decay = post_spike_weight_decay,
             **kwargs
         )
 
@@ -138,11 +145,14 @@ class Connection(AbstractConnection):
         source: Nodes,
         target: Nodes,
         impulse_amplitude: float,
+        impulse_amplitude_2: float,
         impulse_length: float,
         impulse_shape_factor: float = 0.9,
+        invert: bool = False,
         nu: Optional[Union[float, Sequence[float]]] = None,
         reduction: Optional[callable] = None,
         weight_decay: float = 0.0,
+        post_spike_weight_decay: float = 0.0,
         **kwargs
     ) -> None:
         # language=rst
@@ -167,7 +177,7 @@ class Connection(AbstractConnection):
         :param ByteTensor norm_by_max_with_shadow_weights: Normalize the weight of a neuron by its max weight by
                                                            original weights.
         """
-        super().__init__(source, target, impulse_amplitude, impulse_length, impulse_shape_factor, nu, reduction, weight_decay, **kwargs)
+        super().__init__(source, target, impulse_amplitude, impulse_amplitude_2, impulse_length, impulse_shape_factor, invert, nu, reduction, weight_decay, post_spike_weight_decay, **kwargs)
 
         w = kwargs.get("w", None)
         if w is None:
@@ -179,11 +189,6 @@ class Connection(AbstractConnection):
             if self.wmin != -np.inf or self.wmax != np.inf:
                 w = torch.clamp(w, self.wmin, self.wmax)
 
-                
-                
-                
-                
-                
                 
         self.w = Parameter(w, False)
         self.b = Parameter(kwargs.get("b", torch.zeros(target.n)), False)
@@ -203,21 +208,32 @@ class Connection(AbstractConnection):
         return impulse
 
     def impulse_curve(self):
-        #impulse_bias = self.impulse_amplitude *(self.impulse_state == self.impulse_length/2 ).float() + self.impulse_amplitude *(self.impulse_state == (self.impulse_length/2 + 1) ).float()
-        #impulse = 0.1 * (self.impulse_state > 0).float().view(-1) - impulse_bias 
-        
         
         k = self.impulse_shape_factor
-        impulse_value = self.impulse_amplitude/(self.impulse_length - 2 )/k #производная в точках, не находящихся в середине импульса
-    
-        impulse_bias =  (2*self.impulse_amplitude *(abs(self.impulse_state - (self.impulse_length * k)) < 0.5).float().view(-1) + 2*self.impulse_amplitude*(abs(self.impulse_state - (self.impulse_length * k)) == 0.5).float().view(-1)*(self.impulse_state < self.impulse_length * k).float().view(-1))
+        
+        if self.invert:
+            
+            impulse_value_2 = self.impulse_amplitude/(self.impulse_length*k - 1) 
+        
+            impulse_value_1 = self.impulse_amplitude/(self.impulse_length*(1-k))
+        
+            impulse_bias =  2*self.impulse_amplitude *(self.impulse_state > (self.impulse_length * (1-k)+ 0.5)).float().view(-1) *(self.impulse_state <= (self.impulse_length * (1-k)+1.5)).float().view(-1)
                                                
-        impulse = (-impulse_value) * (self.impulse_state > 0).float().view(-1) * (self.impulse_state < self.impulse_length * k).float().view(-1) + (-impulse_value)/((1-k)/k)  * (self.impulse_state > self.impulse_length * k).float().view(-1) + impulse_bias
+            impulse = (-impulse_value_1) * (self.impulse_state > 0).float().view(-1) * (self.impulse_state <= (self.impulse_length * (1-k) + 0.5)).float().view(-1) + (-impulse_value_2)  * (self.impulse_state > (self.impulse_length * (1-k)+1.5)).float().view(-1) + impulse_bias   
         
+            return impulse
+            
+        else:
+
+            impulse_value_2 = self.impulse_amplitude / (self.impulse_length * k - 1)
+
+            impulse_value_1 = self.impulse_amplitude_2 / (self.impulse_length * (1 - k))
+
+            impulse_bias = (self.impulse_amplitude + self.impulse_amplitude_2) * (self.impulse_state >= (self.impulse_length * k)).float().view(-1) * (self.impulse_state < (self.impulse_length * k + 1)).float().view(-1)
+
+            impulse = (impulse_value_1) * (self.impulse_state >= (self.impulse_length * k) + 1).float().view(-1) + (impulse_value_2) * (self.impulse_state > 0).float().view(-1) * (self.impulse_state < (self.impulse_length * k)).float.view(-1) - impulse_bias
         
-        impulse *= -1
-        
-        return impulse
+            return impulse
       
     
     def compute(self, s: torch.Tensor) -> torch.Tensor:
