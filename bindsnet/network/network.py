@@ -341,12 +341,15 @@ class Network(torch.nn.Module):
                 # Update each layer of nodes.
                 if isinstance(self.layers[l], AbstractInput):
                     # shape is [time, batch, n_0, ...]
+                                          
                     self.layers[l].forward(x=inpts[l][t])
+                    
                 else:
+                    
                     if one_step:
                         # Get input to this layer (one-step mode).
                         inpts.update(self._get_inputs(layers=[l]))
-
+                          
                     self.layers[l].forward(x=inpts[l])
 
                 # Clamp neurons to spike.
@@ -375,6 +378,9 @@ class Network(torch.nn.Module):
 
             # Run synapse updates.
             for c in self.connections:
+                
+                self.connections[c].target.prev_layer_s = self.connections[c].source.s[-1]
+                
                 self.connections[c].update(
                     mask=masks.get(c, None), learning=self.learning, **kwargs
                 )

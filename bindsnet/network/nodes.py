@@ -578,11 +578,11 @@ class LIFNodes(Nodes):
         tc_decay: Union[float, torch.Tensor] = 150.0,
         dt: float  = 1.0,
         lbound: float = None,
-        astrocyte_receptive_field: int = None,
-        gamma: float = None,
+        enable_astrocyte: bool = False,
         alpha: float = None,
-        theta_k: float = None,
         k: float = None,
+        G_thr: float = None,
+        Ca_thr: float = None,
         **kwargs,
     ) -> None:
         # language=rst
@@ -616,7 +616,7 @@ class LIFNodes(Nodes):
         
         self.dt = dt
         
-        self.astrocyte_receptive_field = astrocyte_receptive_field
+        self.enable_astrocyte = enable_astrocyte
         
         self.register_buffer(
             "rest", torch.tensor(rest, dtype=torch.float)
@@ -642,25 +642,36 @@ class LIFNodes(Nodes):
         )  # Refractory period counters.
 
         self.lbound = lbound  # Lower bound of voltage.
-
-        if self.astrocyte_receptive_field is not None:
-            self.Y = torch.zeros(1, 1+len(self.thresh)-self.astrocyte_receptive_field)
-        self.gamma = gamma
-        self.theta_k = theta_k
+        self.prev_layer_s = None
+        
+        self.I_glu = torch.zeros(len(self.thresh))
+        self.G = torch.zeros(len(self.thresh))
         self.k = k
         self.alpha = alpha
-        
-    def H(self, X):
-        return 1/(1 + torch.exp(-(X-self.theta_k)/self.k))
+        self.G_thr = G_thr
+        self.Ca_thr = Ca_thr
+        self.initial_thresh = thresh
     
     def astrocyte_input(self):
         
         response = torch.ones_like(self.thresh)
-
-        for i in range(0,1+len(self.thresh)-self.astrocyte_receptive_field):
-            self.Y[0][i] -= self.dt*self.alpha*(self.Y[0][i] - self.H(sum(self.v[0][i:i+self.astrocyte_receptive_field])))
-            response[i:i+self.astrocyte_receptive_field] += self.gamma*self.Y[0][i]
         
+        if self.prev_layer_s is not None:
+            
+            assert len(self.prev_layer_s) == len(self.thresh)
+            
+            self.G = self.G - self.dt * (self.alpha * self.G - self.k * self.prev_layer_s)
+            
+            self.I_glu[self.G > self.G_thr] = 0.001
+            self.I_glu[self.I_glu > 0] += 0.001
+            self.I_glu[self.I_glu > 80] = 0
+            self.G[self.G > self.G_thr] = 0
+            Ca = (self.I_glu-0.1) * torch.exp(-0.15 * self.I_glu)
+            Ca[Ca < self.Ca_thr] = 0
+            Ca[Ca >= self.Ca_thr] = 5
+            
+            response = response/(1+Ca)
+            
         return response
     
     def forward(self, x: torch.Tensor) -> None:
@@ -680,12 +691,12 @@ class LIFNodes(Nodes):
         self.refrac_count = (self.refrac_count > 0).float() * (
             self.refrac_count - self.dt
         )
-
+        
+        if self.enable_astrocyte:    
+            self.thresh = self.initial_thresh * self.astrocyte_input()
+        
         # Check for spiking neurons.
         self.s = self.v >= self.thresh
-        
-        if self.astrocyte_receptive_field is not None:    
-            self.thresh *= self.astrocyte_input() 
 
         # Refractoriness and voltage reset.
         self.refrac_count.masked_fill_(self.s, self.refrac)
