@@ -118,13 +118,247 @@ class NoOp(LearningRule):
         """
         super().update()
 
-
 class PostPre(LearningRule):
     # language=rst
     """
-    Simple STDP rule involving both pre- and post-synaptic spiking activity. The pre-synaptic update is negative, while
-    the post-synpatic update is positive.
+    STDP rule involving both pre- and post-synaptic spiking activity. The post-synaptic update is positive and the pre-
+    synaptic update is negative, and both are dependent on the magnitude of the synaptic weights.
     """
+
+    def __init__(
+        self,
+        connection: AbstractConnection,
+        nu: Optional[Union[float, Sequence[float]]] = None,
+        reduction: Optional[callable] = None,
+        weight_decay: float = 0.0,
+        post_spike_weight_decay: float = 0.0,
+        tc_trace: float = 20,
+        tc_trace_neg: float = 20,
+        tau_gamma: float = 100,
+        dt = 1.0,
+        **kwargs
+    ) -> None:
+        # language=rst
+        """
+        Constructor for ``WeightDependentPostPre`` learning rule.
+
+        :param connection: An ``AbstractConnection`` object whose weights the ``WeightDependentPostPre`` learning rule will
+                           modify.
+        :param nu: Single or pair of learning rates for pre- and post-synaptic events, respectively.
+        :param reduction: Method for reducing parameter updates along the minibatch dimension.
+        :param weight_decay: Constant multiple to decay weights by on each iteration.
+        """
+        super().__init__(
+            connection=connection,
+            nu=nu,
+            reduction=reduction,
+            weight_decay=weight_decay,
+            post_spike_weight_decay = post_spike_weight_decay,
+            **kwargs
+        )
+        
+        self.tc_trace = tc_trace
+        self.tc_trace_neg = tc_trace_neg
+        self.tau_gamma = tau_gamma
+        self.dt = dt
+        self.State = 0
+        self.interval = 100
+      
+        self.fl = open("STDP.txt",'r')
+        
+        self.STDP_base =  torch.zeros([101, 120])
+        
+        i = 0
+        k = 0
+        for line in self.fl:
+    
+            for sym in line.split():
+                
+                self.STDP_base[i][k]= float(sym) 
+                k += 1
+            k = 0            
+            i += 1
+        i = 0       
+        self.fl.close()
+        
+        
+        assert self.source.traces, "Pre-synaptic nodes must record spike traces."
+        assert (
+            connection.wmin != -np.inf and connection.wmax != np.inf
+        ), "Connection must define finite wmin and wmax."
+
+        self.wmin = connection.wmin
+        self.wmax = connection.wmax
+
+        if isinstance(connection, (Connection, LocalConnection)):
+            self.update = self._connection_update
+        elif isinstance(connection, Conv2dConnection):
+            self.update = self._conv2d_connection_update
+        else:
+            raise NotImplementedError(
+                "This learning rule is not supported for this Connection type."
+            )
+            
+    def G_neg(self, R, g_neg= 0.137, G_0_neg= -3.5, R_G_neg= 1230):       
+        return G_0_neg*(g_neg + np.exp(-R/R_G_neg))
+    
+    def G_pos(self, R, g_pos= 23.2, G_0_pos= 0.046, R_G_pos= 790):
+        return G_0_pos*(g_pos + R*np.exp(-R/R_G_pos))
+            
+    def c_neg(self, R, c_c_neg= -0.53, a_0_neg= 1.0, R_c_neg= 810):
+        #return a_0_neg*(c_c_neg + np.exp(-R/R_c_neg))
+        return 0
+    
+    def c_pos(self, R, c_c_pos= 0.01, a_0_pos= -1.7, R_c_pos= 130):
+        #return a_0_pos*(c_c_pos + np.exp(-R/R_c_pos))    
+        return 0
+        
+    def Ohm_to_weight(self, Ohm, Ohm_min=1000, Ohm_max=10000):
+        weight = 1/(Ohm)
+        return (weight - 1/Ohm_max) / (1/Ohm_min - 1/Ohm_max)
+    
+    def weight_to_Ohm(self, weight, Ohm_min=1000, Ohm_max=10000):
+        Ohm = 1 / (weight * (1/Ohm_min - 1/Ohm_max) + 1/Ohm_max)
+        return Ohm
+    
+    def round_to_percent(self, tensor):
+        
+        tensor = tensor/self.nu[0] #here we assume that nu[0] == nu[1]. It is just a scale factor.
+        tensor = tensor *100
+        
+        #print(float(tensor[1,1]))
+        
+        for i in range (tensor.size(0)):
+            
+            for k in range (tensor.size(1)):
+            
+                tensor[i][k] = int(round(float(tensor[i][k])))
+                
+                if tensor[i][k]<0:
+                    tensor[i][k] = -tensor[i][k]
+                
+        return tensor
+        
+    
+    def delta_w_custom(self, delta):
+        
+        first_index = self.round_to_percent(self.connection.w)
+        second_index = (delta + 60)
+        for i in range (first_index.size(0)):
+            
+            for k in range (first_index.size(1)):
+                
+                if (second_index[i][k] > 120) or (second_index[i][k] < 0):
+                
+                    second_index[i][k] = 0
+                
+                delta[i][k] = self.STDP_base[int(first_index[i][k])][int(second_index[i][k])]
+                
+               # if (second_index[i][k] > 120) or (second_index[i][k] < 0):
+                    
+                 #   delta[i][k] = 0
+               # if  delta[i][k]<0:
+                    
+                    #print(self.source.s.view(self.source.batch_size, -1).unsqueeze(2).float(),'\n')
+                           
+        #return torch.normal(mean = delta,std = 0.614699*delta)
+        return delta
+    
+    def _connection_update(self, **kwargs) -> None:
+        # language=rst
+        """
+        Post-pre learning rule for ``Connection`` subclass of ``AbstractConnection`` class.
+        """
+        batch_size = self.source.batch_size
+
+        source_s = self.source.s.view(batch_size, -1).unsqueeze(2).float()
+        source_x = self.source.x.view(batch_size, -1).unsqueeze(2)
+        target_s = self.target.s.view(batch_size, -1).unsqueeze(1).float()
+        target_x = self.target.x_neg.view(batch_size, -1).unsqueeze(1)
+
+        update = 0
+        
+        outer_product = self.reduction(torch.bmm(source_s, target_x), dim=0)
+        update += self.delta_w_custom(self.tc_trace_neg*np.log(outer_product)) # + c_neg)
+        #print(-self.tc_trace_neg*np.log(outer_product))
+        
+        # Post-synaptic update.
+        
+        outer_product = self.reduction(torch.bmm(source_x, target_s), dim=0)
+        update += self.delta_w_custom(-self.tc_trace*np.log(outer_product)) # + c_pos)
+        
+        update += (-self.post_spike_weight_decay)*self.connection.w*self.reduction(torch.bmm(torch.ones(source_x.shape), target_s), dim=0)
+        
+        self.State = self.nu[0]*(self.State*np.exp(-self.dt/self.tau_gamma) + update*(1-np.exp(-self.dt/self.tau_gamma)))
+        
+        self.connection.w += self.State
+
+        super().update()
+
+    def _conv2d_connection_update(self, **kwargs) -> None:
+        # language=rst
+        """
+        Post-pre learning rule for ``Conv2dConnection`` subclass of ``AbstractConnection`` class.
+        """
+        # Get convolutional layer parameters.
+        (
+            out_channels,
+            in_channels,
+            kernel_height,
+            kernel_width,
+        ) = self.connection.w.size()
+        padding, stride = self.connection.padding, self.connection.stride
+        batch_size = self.source.batch_size
+
+        # Reshaping spike traces and spike occurrences.
+        source_x = im2col_indices(
+            self.source.x, kernel_height, kernel_width, padding=padding, stride=stride
+        )
+        target_x = self.target.x.view(batch_size, out_channels, -1)
+        source_s = im2col_indices(
+            self.source.s.float(),
+            kernel_height,
+            kernel_width,
+            padding=padding,
+            stride=stride,
+        )
+        target_s = self.target.s.view(batch_size, out_channels, -1).float()
+
+        update = 0
+
+        # Pre-synaptic update.
+        if self.nu[0]:
+            pre = self.reduction(
+                torch.bmm(target_x, source_s.permute((0, 2, 1))), dim=0
+            )
+            update -= (
+                self.nu[0]
+                * pre.view(self.connection.w.size())
+                * (self.connection.w - self.wmin)
+            )
+
+        # Post-synaptic update.
+        if self.nu[1]:
+            post = self.reduction(
+                torch.bmm(target_s, source_x.permute((0, 2, 1))), dim=0
+            )
+            update += (
+                self.nu[1]
+                * post.view(self.connection.w.size())
+                * (self.wmax - self.connection.wmin)
+            )
+
+        self.connection.w += update
+
+        super().update()        
+        
+"""
+class PostPre(LearningRule):
+    # language=rst
+    
+    #Simple STDP rule involving both pre- and post-synaptic spiking activity. The pre-synaptic update is negative, while
+    #the post-synpatic update is positive.
+   
 
     def __init__(
         self,
@@ -135,14 +369,14 @@ class PostPre(LearningRule):
         **kwargs
     ) -> None:
         # language=rst
-        """
-        Constructor for ``PostPre`` learning rule.
+        
+        #Constructor for ``PostPre`` learning rule.
 
-        :param connection: An ``AbstractConnection`` object whose weights the ``PostPre`` learning rule will modify.
-        :param nu: Single or pair of learning rates for pre- and post-synaptic events, respectively.
-        :param reduction: Method for reducing parameter updates along the minibatch dimension.
-        :param weight_decay: Constant multiple to decay weights by on each iteration.
-        """
+        #:param connection: An ``AbstractConnection`` object whose weights the ``PostPre`` learning rule will modify.
+        #:param nu: Single or pair of learning rates for pre- and post-synaptic events, respectively.
+        #:param reduction: Method for reducing parameter updates along the minibatch dimension.
+        #:param weight_decay: Constant multiple to decay weights by on each iteration.
+        
         super().__init__(
             connection=connection,
             nu=nu,
@@ -166,9 +400,9 @@ class PostPre(LearningRule):
 
     def _connection_update(self, **kwargs) -> None:
         # language=rst
-        """
-        Post-pre learning rule for ``Connection`` subclass of ``AbstractConnection`` class.
-        """
+        
+        #Post-pre learning rule for ``Connection`` subclass of ``AbstractConnection`` class.
+        
         batch_size = self.source.batch_size
 
         source_s = self.source.s.view(batch_size, -1).unsqueeze(2).float()
@@ -190,9 +424,9 @@ class PostPre(LearningRule):
 
     def _conv2d_connection_update(self, **kwargs) -> None:
         # language=rst
-        """
-        Post-pre learning rule for ``Conv2dConnection`` subclass of ``AbstractConnection`` class.
-        """
+        
+        #Post-pre learning rule for ``Conv2dConnection`` subclass of ``AbstractConnection`` class.
+        
         # Get convolutional layer parameters.
         out_channels, _, kernel_height, kernel_width = self.connection.w.size()
         padding, stride = self.connection.padding, self.connection.stride
@@ -227,7 +461,7 @@ class PostPre(LearningRule):
             self.connection.w += self.nu[1] * post.view(self.connection.w.size())
 
         super().update()
-
+"""
 
 class WeightDependentPostPre(LearningRule):
     # language=rst
