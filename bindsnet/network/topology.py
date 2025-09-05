@@ -231,7 +231,7 @@ class Connection(AbstractConnection):
 
             impulse_bias = (self.impulse_amplitude + self.impulse_amplitude_2) * (self.impulse_state >= (self.impulse_length * k)).float().view(-1) * (self.impulse_state < (self.impulse_length * k + 1)).float().view(-1)
 
-            impulse = (impulse_value_1) * (self.impulse_state > (self.impulse_length * k)).float().view(-1) + (impulse_value_2) * (self.impulse_state > 0).float().view(-1) * (self.impulse_state < (self.impulse_length * k)).float().view(-1) - impulse_bias
+            impulse = (impulse_value_1) * (self.impulse_state >= (self.impulse_length * k) + 1).float().view(-1) + (impulse_value_2) * (self.impulse_state > 0).float().view(-1) * (self.impulse_state < (self.impulse_length * k)).float().view(-1) - impulse_bias
         
             return impulse
       

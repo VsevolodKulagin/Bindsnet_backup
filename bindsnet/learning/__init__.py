@@ -1,5 +1,6 @@
 from .learning import (
     LearningRule,
+    RegularSTDP,
     NoOp,
     PostPre,
     WeightDependentPostPre,
